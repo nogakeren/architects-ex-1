@@ -310,8 +310,8 @@ if torch.cuda.is_available():
 
 enc = tiktoken.get_encoding("gpt2")
 
-B = 4 # micro batch size
-T = 64 # sequence length
+B = 16 # micro batch size
+T = 1024 # sequence length
 
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
@@ -325,7 +325,7 @@ model.to(device)
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 715
-max_steps = 100 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
+max_steps = 500 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
 
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -360,7 +360,8 @@ for step in range(max_steps):
     inputs, targets = train_loader.next_batch()
     inputs, targets = inputs.to(device), targets.to(device)
     optimizer.zero_grad()
-    logits, loss = model.forward(inputs, targets)
+    with torch.autocast(device_type, torch.bfloat16):
+        logits, loss = model.forward(inputs, targets)
     loss.backward()
     norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()

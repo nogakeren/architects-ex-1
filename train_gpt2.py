@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import math
 import time
 import inspect
@@ -8,6 +9,11 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # -----------------------------------------------------------------------------
+
+def get_data_root() -> str:
+    DATA_ROOT_FAR = Path("/mnt/data/edu_fineweb10B")
+    DATA_ROOT_LOCAL = Path("edu_fineweb10B")
+    return str(DATA_ROOT_FAR) if DATA_ROOT_FAR.exists() else str(DATA_ROOT_LOCAL)
 
 class CausalSelfAttention(nn.Module):
 
@@ -225,7 +231,7 @@ class DataLoaderLite:
         assert split in {'train', 'val'}
 
         # get the shard filenames
-        data_root = "/mnt/data/edu_fineweb10B"
+        data_root = get_data_root()
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -348,9 +354,16 @@ for step in range(max_steps):
     t0 = time.time()
     last_step = (step == max_steps - 1)
 
-    
-    # TODO: Implement the training step
-    
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    inputs, targets = train_loader.next_batch()
+    inputs, targets = inputs.to(device), targets.to(device)
+    optimizer.zero_grad()
+    logits, loss = model.forward(inputs, targets)
+    loss.backward()
+    norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    optimizer.step()
     
     if device_type == "cuda":
         torch.cuda.synchronize() # wait for the GPU to finish work

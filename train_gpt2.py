@@ -7,8 +7,14 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from hf_checkpoint import save_and_upload_checkpoint
 
 # -----------------------------------------------------------------------------
+
+def get_checkpoint_dir() -> str:
+    HF_CHECKPOINT_DIR_FAR = Path("/mnt/models/nogak")
+    HF_CHECKPOINT_DIR_LOCAL = Path("nogak")
+    return str(HF_CHECKPOINT_DIR_FAR) if HF_CHECKPOINT_DIR_FAR.parent.exists() else str(HF_CHECKPOINT_DIR_LOCAL) 
 
 def get_data_root() -> str:
     DATA_ROOT_FAR = Path("/mnt/data/edu_fineweb10B")
@@ -314,7 +320,7 @@ if torch.cuda.is_available():
 
 enc = tiktoken.get_encoding("gpt2")
 
-B = 32 # micro batch size
+B = 64 # micro batch size
 T = 1024 # sequence length
 
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
@@ -327,10 +333,15 @@ model = GPT(GPTConfig(vocab_size=50304))
 # model = GPT.from_pretrained("gpt2") # or init from OpenAI GPT-2
 model.to(device)
 model = torch.compile(model)
+
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model
+
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 715
-max_steps = 1000 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
+max_steps = 5000 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
 num_val_batches = 64
 val_step = 20
 
@@ -349,14 +360,15 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 # optimize!
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device_type=device_type)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device_type=device_type)
 
-# create the log directory we will write checkpoints to and log to
-log_dir = "log"
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, f"log.txt")
-with open(log_file, "w") as f: # open for writing to clear the file
-    pass
+if master_process:
+    # create the log directory we will write checkpoints to and log to
+    log_dir = "log"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"log.txt")
+    with open(log_file, "w") as f: # open for writing to clear the file
+        pass
 
 for step in range(max_steps):
     t0 = time.time()
@@ -377,9 +389,11 @@ for step in range(max_steps):
                 _, curr_val_loss = model(inputs, targets)
                 accum_val_loss += curr_val_loss.detach()
             accum_val_loss /= num_val_batches
-            print(f"step {step:5d} | validation_loss: {accum_val_loss:.6f}")
-            with open(log_file, "a") as f:
-                f.write(f"{step} val {accum_val_loss:.6f}\n")
+            if master_process:
+                print(f"step {step:5d} | validation_loss: {accum_val_loss:.6f}")
+                with open(log_file, "a") as f:
+                    f.write(f"{step} val {accum_val_loss:.6f}\n")
+                save_and_upload_checkpoint(raw_model, step, accum_val_loss, get_checkpoint_dir())
             
         model.train()
 

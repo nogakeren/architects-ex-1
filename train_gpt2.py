@@ -331,6 +331,9 @@ max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 715
 max_steps = 1000 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
+num_val_batches = 64
+val_step = 20
+
 
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -362,9 +365,27 @@ for step in range(max_steps):
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+    
+    if 0 == (step % val_step):
+        model.eval()
+        
+        with torch.no_grad():
+            accum_val_loss = 0
+            for _ in range(num_val_batches):
+                inputs, targets = val_loader.next_batch()
+                inputs, targets = inputs.to(device), targets.to(device)
+                _, curr_val_loss = model(inputs, targets)
+                accum_val_loss += curr_val_loss.detach()
+            accum_val_loss /= num_val_batches
+            print(f"step {step:5d} | validation_loss: {accum_val_loss:.6f}")
+            with open(log_file, "a") as f:
+                f.write(f"{step} val {accum_val_loss:.6f}\n")
+            
+        model.train()
+
+    optimizer.zero_grad()
     inputs, targets = train_loader.next_batch()
     inputs, targets = inputs.to(device), targets.to(device)
-    optimizer.zero_grad()
     with torch.autocast(device_type, torch.bfloat16):
         logits, loss = model.forward(inputs, targets)
     loss.backward()
